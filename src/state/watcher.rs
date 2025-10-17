@@ -71,29 +71,30 @@ impl ConfigWatcher {
         // Keep Watcher here (keep it alive until it drops)
         loop {
             tokio::select! {
-            // Event receive
-            Some(event) = notify_rx.recv() => {
-                if Self::is_config_modified(&event, &config_path) {
-                    info!("Config file change detected, reloading...");
+                // Event receive
 
-                    match Self::load_config(&config_path).await {
-                        Ok(config) => {
-                            info!("Config loaded successfully, notifying daemon");
-                            if tx.try_send(ConfigChangeEvent { config }).is_err() {
-                                warn!("Config change channel full or receiver dropped, skipping update");
+                Some(event) = notify_rx.recv() => {
+                    if Self::is_config_modified(&event, &config_path) {
+                        info!("Config file change detected, reloading...");
+
+                        match Self::load_config(&config_path).await {
+                            Ok(config) => {
+                                info!("Config loaded successfully, notifying daemon");
+                                if tx.try_send(ConfigChangeEvent { config }).is_err() {
+                                    warn!("Config change channel full or receiver dropped, skipping update");
+                                }
                             }
+                            Err(e) => warn!("Failed to reload config: {}", e),
                         }
-                        Err(e) => warn!("Failed to reload config: {}", e),
                     }
                 }
-            }
 
-            // Wait for cancellation
-            _ = cancellation.cancelled() => {
-                info!("Config watcher shutdown complete");
-                break;  // Exit the loop, watcher drop occurs
+                // Wait for cancellation
+                _ = cancellation.cancelled() => {
+                    info!("Config watcher shutdown complete");
+                    break;  // Exit the loop, watcher drop occurs
+                }
             }
-        }
         }
 
         debug!("Config watcher event loop terminated");
