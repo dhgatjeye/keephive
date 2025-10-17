@@ -1,9 +1,9 @@
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
 /// Must be kept alive for the entire application lifetime
-static LOG_GUARD: OnceLock<tracing_appender::non_blocking::WorkerGuard> = OnceLock::new();
+static LOG_GUARD: OnceLock<Mutex<Option<tracing_appender::non_blocking::WorkerGuard>>> = OnceLock::new();
 
 /// Log rotation strategy
 pub enum Rotation {
@@ -61,11 +61,22 @@ pub fn init_logging(
 
         subscriber.with(file_layer).init();
 
-        LOG_GUARD.set(guard)
+        LOG_GUARD.set(Mutex::new(Some(guard)))
             .map_err(|_| anyhow::anyhow!("Logger already initialized"))?;
     } else {
         subscriber.init();
     }
 
     Ok(())
+}
+
+pub fn shutdown_logging() {
+    // Take the guard out of the static and drop it explicitly
+    if let Some(mutex) = LOG_GUARD.get() {
+        if let Ok(mut guard_option) = mutex.lock() {
+            if let Some(guard) = guard_option.take() {
+                drop(guard);
+            }
+        }
+    }
 }

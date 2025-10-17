@@ -350,6 +350,10 @@ impl ServiceDaemon {
         // Final state save
         self.state_manager.save().await?;
 
+        // Flush logging before shutdown
+        info!("Flushing logs before shutdown...");
+        crate::observability::shutdown_logging();
+
         Ok(())
     }
 }
