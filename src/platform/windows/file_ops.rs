@@ -75,12 +75,13 @@ pub fn get_disk_free_space(path: &Path) -> Result<u64> {
     use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
     use windows::core::PCWSTR;
     use std::os::windows::ffi::OsStrExt;
+    use anyhow::bail;
 
     // Get the root path (drive letter)
     let root = if let Some(prefix) = path.components().next() {
         PathBuf::from(prefix.as_os_str()).join("\\")
     } else {
-        return Ok(u64::MAX); // TODO: Handle this case properly
+        bail!("Invalid path: path has no components and cannot determine disk space");
     };
 
     let root_wide: Vec<u16> = root.as_os_str()
