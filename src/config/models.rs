@@ -185,3 +185,12 @@ impl Schedule {
 
 /// Backup configuration (alias for compatibility)
 pub type BackupConfig = ServiceConfig;
+
+/// Reserved filenames on Windows systems
+pub const WINDOWS_RESERVED: &[&str; 24] = &[
+    "aux", "con", "nul", "prn",
+    "com0", "com1", "com2", "com3", "com4",
+    "com5", "com6", "com7", "com8", "com9",
+    "lpt0", "lpt1", "lpt2", "lpt3", "lpt4",
+    "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];

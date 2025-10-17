@@ -13,141 +13,105 @@ impl PathNormalizer for WindowsPathNormalizer {
     fn normalize(&self, path: &Path) -> PathBuf {
         let path_str = path.to_string_lossy();
 
-        // Already has extended prefix
+        // Already has extended prefix, keep it
         if path_str.starts_with(EXTENDED_PATH_PREFIX) {
             return path.to_path_buf();
         }
 
-        // Check if path exceeds windows limit or will likely exceed during operations
-        if path_str.len() > WINDOWS_MAX_PATH - 50 {
-            // Convert to absolute path first
-            let absolute = if path.is_absolute() {
-                path.to_path_buf()
-            } else {
-                match std::env::current_dir() {
-                    Ok(cwd) => cwd.join(path),
-                    Err(e) => {
-                        tracing::error!("Failed to get current dir for normalization: {}", e);
-                        return path.to_path_buf();
-                    }
-                }
-            };
+        // Try to canonicalize (only works for existing paths)
+        match dunce::canonicalize(path) {
+            Ok(normalized) => {
+                let normalized_str = normalized.to_string_lossy();
 
-            let extended = if absolute.to_string_lossy().starts_with(r"\\") {
-                format!("\\\\?\\UNC{}", &absolute.to_string_lossy()[1..])
-            } else {
-                format!("{}{}", EXTENDED_PATH_PREFIX, absolute.display())
-            };
-            PathBuf::from(extended)
-        } else {
-            path.to_path_buf()
+                // Only add prefix if path is actually long
+                if normalized_str.len() > WINDOWS_MAX_PATH - 50 {
+                    tracing::debug!(
+                        "Path exceeds MAX_PATH ({}), adding extended prefix",
+                        normalized_str.len()
+                    );
+
+                    if normalized_str.starts_with(r"\\") {
+                        PathBuf::from(format!(r"\\?\UNC{}", &normalized_str[1..]))
+                    } else {
+                        PathBuf::from(format!(r"{}{}", EXTENDED_PATH_PREFIX, normalized_str))
+                    }
+                } else {
+                    // Short path, no prefix needed
+                    normalized
+                }
+            }
+            Err(e) => {
+                // Path doesn't exist or can't be accessed
+                tracing::debug!(
+                    "Cannot canonicalize '{}': {}. Using original path.",
+                    path.display(),
+                    e
+                );
+                path.to_path_buf()
+            }
         }
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_short_path_unchanged() {
+    fn test_normalize_existing_short_path() {
         let normalizer = WindowsPathNormalizer;
-        let path = Path::new(r"C:\Users\test\file.txt");
-        let normalized = normalizer.normalize(path);
-        assert_eq!(normalized, path);
-    }
+        let temp = std::env::temp_dir();
 
-    #[test]
-    fn test_long_path_gets_prefix() {
-        let normalizer = WindowsPathNormalizer;
+        let normalized = normalizer.normalize(&temp);
 
-        let long_path = "C:\\".to_string() + &"verylongdirectoryname\\".repeat(12);
-        let path = Path::new(&long_path);
-        let normalized = normalizer.normalize(path);
-
-        println!("Original path length: {}", long_path.len());
-        println!("Normalized path: {}", normalized.display());
-
-        assert!(normalized.to_string_lossy().starts_with(EXTENDED_PATH_PREFIX));
-    }
-
-    #[test]
-    fn test_already_prefixed_path_unchanged() {
-        let normalizer = WindowsPathNormalizer;
-        let prefixed_path = r"\\?\C:\some\long\path";
-        let path = Path::new(prefixed_path);
-        let normalized = normalizer.normalize(path);
-        assert_eq!(normalized.to_string_lossy(), prefixed_path);
-    }
-
-    #[test]
-    fn test_relative_long_path_becomes_absolute_with_prefix() {
-        let normalizer = WindowsPathNormalizer;
-
-        let long_relative = "a\\".to_string() + &"verylongdirectoryname\\".repeat(12);
-        let path = Path::new(&long_relative);
-        let normalized = normalizer.normalize(path);
-
-        let normalized_str = normalized.to_string_lossy();
-        assert!(normalized_str.starts_with(EXTENDED_PATH_PREFIX));
-
-        assert!(normalized_str.contains("\\a\\"));
-    }
-
-    #[test]
-    fn test_empty_path_returns_unchanged() {
-        let normalizer = WindowsPathNormalizer;
-        let empty_path = Path::new("");
-        let normalized = normalizer.normalize(empty_path);
-
-        // Should return the path as-is (empty) with warning
-        assert_eq!(normalized.to_string_lossy(), "");
-    }
-
-    #[test]
-    fn test_short_relative_path_unchanged() {
-        let normalizer = WindowsPathNormalizer;
-        let path = Path::new("short\\relative\\path.txt");
-        let normalized = normalizer.normalize(path);
-
-        // Short relative paths should not get extended prefix
+        assert!(normalized.exists());
         assert!(!normalized.to_string_lossy().starts_with(EXTENDED_PATH_PREFIX));
-        assert_eq!(normalized, path);
     }
 
     #[test]
-    fn test_absolute_long_path_with_prefix() {
+    fn test_normalize_existing_long_path() {
         let normalizer = WindowsPathNormalizer;
+        let temp = std::env::temp_dir();
 
-        // Create a long absolute path (over 260 chars)
-        let long_path = "C:\\".to_string() + &"verylongdirectoryname123456789\\".repeat(9) + "file.txt";
-        assert!(long_path.len() > WINDOWS_MAX_PATH);
+        // Create deep directory structure
+        let mut deep_path = temp.clone();
+        for i in 0..20 {
+            deep_path.push(format!("verylongdirectoryname_{}", i));
+        }
 
-        let path = Path::new(&long_path);
-        let normalized = normalizer.normalize(path);
+        // Create it
+        std::fs::create_dir_all(&deep_path).ok();
 
-        let normalized_str = normalized.to_string_lossy();
-        assert!(normalized_str.starts_with(EXTENDED_PATH_PREFIX));
-        assert!(normalized_str.contains("C:\\"));
+        if deep_path.to_string_lossy().len() > WINDOWS_MAX_PATH {
+            let normalized = normalizer.normalize(&deep_path);
+
+            // Should have prefix for long existing paths
+            assert!(normalized.to_string_lossy().starts_with(EXTENDED_PATH_PREFIX));
+        }
+
+        // Cleanup
+        std::fs::remove_dir_all(temp.join("verylongdirectoryname_0")).ok();
     }
 
     #[test]
-    fn test_unc_path_handling() {
+    fn test_normalize_nonexistent_returns_original() {
         let normalizer = WindowsPathNormalizer;
-        let unc_path = r"\\server\share\file.txt";
-        let path = Path::new(unc_path);
-        let normalized = normalizer.normalize(path);
+        let fake = Path::new("C:\\this\\does\\not\\exist");
 
-        // Short UNC paths should remain unchanged
-        assert_eq!(normalized.to_string_lossy(), unc_path);
+        let normalized = normalizer.normalize(fake);
+
+        // Should return original path unchanged
+        assert_eq!(normalized, fake);
     }
 
     #[test]
-    fn test_path_with_trailing_backslash() {
+    fn test_normalize_already_has_prefix() {
         let normalizer = WindowsPathNormalizer;
-        let path_with_slash = Path::new(r"C:\Users\test\");
-        let normalized = normalizer.normalize(path_with_slash);
+        let with_prefix = Path::new(r"\\?\C:\test\path");
 
-        // Should handle trailing backslash gracefully
-        assert_eq!(normalized, path_with_slash);
+        let normalized = normalizer.normalize(with_prefix);
+
+        // Should keep the prefix
+        assert_eq!(normalized, with_prefix);
     }
 }

@@ -3,7 +3,7 @@ use chrono::Utc;
 use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
-
+use crate::config::models::WINDOWS_RESERVED;
 use crate::core::{validate_backup_job, CopyEngine};
 use crate::state::BackupMetadata;
 
@@ -138,45 +138,42 @@ impl BackupOrchestrator {
 
     /// Sanitize backup name to prevent path invalid filesystem characters
     fn sanitize_backup_name(name: &str) -> String {
-        const INVALID_CHARS: &[char] = &['/', '\\', ':', '*', '?', '"', '<', '>', '|', '\0'];
+        let sanitized = name.chars()
+            .map(|c| match c {
+                // Path traversal attempts
+                '/' | '\\' => '_',
+                // Windows invalid characters
+                '<' | '>' | ':' | '"' | '|' | '?' | '*' => '_',
+                // Null byte
+                '\0' => '_',
+                // Control characters
+                c if c.is_control() => '_',
+                // Leading/trailing dots and spaces
+                '.' | ' ' if name.starts_with(c) || name.ends_with(c) => '_',
+                // Valid character
+                c => c,
+            })
+            .collect::<String>()
+            .trim_matches('_')
+            .chars()
+            .take(255) // Filename length limit
+            .collect::<String>();
 
-        let mut sanitized = String::with_capacity(name.len());
-
-        for ch in name.chars() {
-            if INVALID_CHARS.contains(&ch) || ch.is_control() {
-                // Replace invalid characters with underscore
-                sanitized.push('_');
-            } else {
-                sanitized.push(ch);
-            }
-        }
-
-        // Additional security checks
-        let sanitized = sanitized.trim();
-
-        // Prevent ".."
-        if sanitized == ".." || sanitized == "." {
-            return "backup".to_string();
-        }
-
-        // Prevent names that start/end with dots (Windows reserved)
-        let sanitized = sanitized.trim_matches('.');
-
-        // Prevent empty names after sanitization
+        // Check if result is empty
         if sanitized.is_empty() {
             return "backup".to_string();
         }
 
-        // Prevent names that are only underscores (from replaced invalid chars)
-        if sanitized.chars().all(|c| c == '_') {
-            return "backup".to_string();
-        }
+        let base_name = sanitized
+            .split('.')
+            .next()
+            .unwrap_or(&sanitized)
+            .to_lowercase();
 
-        // Limit length to prevent filesystem issues (Windows has 255 char limit)
-        if sanitized.len() > 100 {
-            sanitized.chars().take(100).collect()
+        if WINDOWS_RESERVED.contains(&base_name.as_str()) {
+            format!("_{}", sanitized)
         } else {
-            sanitized.to_string()
+            sanitized
         }
     }
 
@@ -321,14 +318,6 @@ mod tests {
     }
 
     #[test]
-    fn test_sanitize_backup_name_limits_length() {
-        let long_name = "a".repeat(200);
-        let sanitized = BackupOrchestrator::sanitize_backup_name(&long_name);
-        assert!(sanitized.len() <= 100, "Should limit length to 100 chars");
-        assert_eq!(sanitized.len(), 100);
-    }
-
-    #[test]
     fn test_sanitize_backup_name_removes_control_chars() {
         let name_with_control = "file\x00name\x01test";
         let sanitized = BackupOrchestrator::sanitize_backup_name(name_with_control);
@@ -349,18 +338,6 @@ mod tests {
             let sanitized = BackupOrchestrator::sanitize_backup_name(name);
             assert_eq!(sanitized, name, "Should preserve valid name: {}", name);
         }
-    }
-
-    #[test]
-    fn test_generate_backup_name_is_unique() {
-        let source = Path::new("C:\\Users\\test");
-
-        let name1 = BackupOrchestrator::generate_backup_name(source);
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        let name2 = BackupOrchestrator::generate_backup_name(source);
-
-        // Should be different due to milliseconds
-        assert_ne!(name1, name2, "Backup names should be unique");
     }
 
     #[test]
@@ -403,7 +380,7 @@ mod tests {
         let millis_part = parts.last().unwrap();
         assert_eq!(millis_part.len(), 3, "Milliseconds should be 3 digits");
         assert!(millis_part.chars().all(|c| c.is_numeric()),
-            "Milliseconds should be numeric");
+                "Milliseconds should be numeric");
     }
 
     #[test]
@@ -414,5 +391,121 @@ mod tests {
         // Should preserve valid unicode
         assert!(backup_name.starts_with("文档_"),
             "Should preserve unicode: {}", backup_name);
+    }
+
+    #[test]
+    fn test_backup_name_length() {
+        let long_name = "a".repeat(300);
+        let source = Path::new(&long_name);
+        let backup_name = BackupOrchestrator::generate_backup_name(source);
+
+        // Name should be truncated but still valid
+        assert!(backup_name.len() <= 300); // 255 + timestamp + micros
+
+        // Should still have valid format
+        let parts: Vec<&str> = backup_name.split('_').collect();
+        assert!(parts.len() >= 4);
+    }
+
+    #[test]
+    fn test_backup_name_fallback() {
+        // Test with path that has no filename
+        let source = Path::new("/");
+        let backup_name = BackupOrchestrator::generate_backup_name(source);
+
+        // Should use "backup" as fallback
+        assert!(
+            backup_name.starts_with("backup_"),
+            "Should use 'backup' fallback: {}",
+            backup_name
+        );
+    }
+
+    #[test]
+    fn test_backup_name_with_invalid_chars() {
+        let source = Path::new("my<project>:test");
+        let backup_name = BackupOrchestrator::generate_backup_name(source);
+
+        // Should sanitize invalid characters
+        assert!(
+            backup_name.starts_with("my_project__test_"),
+            "Should sanitize invalid chars: {}",
+            backup_name
+        );
+        assert!(!backup_name.contains('<'));
+        assert!(!backup_name.contains('>'));
+        assert!(!backup_name.contains(':'));
+    }
+
+    #[test]
+    fn test_backup_name_with_path_traversal() {
+        let source = Path::new("../../../etc/passwd");
+        let backup_name = BackupOrchestrator::generate_backup_name(source);
+
+        // Should sanitize path traversal
+        assert!(!backup_name.contains(".."));
+        assert!(!backup_name.contains('/'));
+        assert!(!backup_name.contains('\\'));
+    }
+
+    #[test]
+    fn test_backup_name_uniqueness() {
+        let source = Path::new("test_project");
+
+        // Generate multiple backup names
+        let name1 = BackupOrchestrator::generate_backup_name(source);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let name2 = BackupOrchestrator::generate_backup_name(source);
+
+        // Should be different due to microsecond precision
+        assert_ne!(
+            name1, name2,
+            "Backup names should be unique: {} vs {}",
+            name1, name2
+        );
+    }
+
+    #[test]
+    fn test_sanitize_windows_reserved_names() {
+        // Exact reserved names
+        assert_eq!(BackupOrchestrator::sanitize_backup_name("CON"), "_CON");
+        assert_eq!(BackupOrchestrator::sanitize_backup_name("con"), "_con");
+        assert_eq!(BackupOrchestrator::sanitize_backup_name("PRN"), "_PRN");
+        assert_eq!(BackupOrchestrator::sanitize_backup_name("AUX"), "_AUX");
+        assert_eq!(BackupOrchestrator::sanitize_backup_name("NUL"), "_NUL");
+
+        // COM ports
+        assert_eq!(BackupOrchestrator::sanitize_backup_name("COM1"), "_COM1");
+        assert_eq!(BackupOrchestrator::sanitize_backup_name("com5"), "_com5");
+
+        // LPT ports
+        assert_eq!(BackupOrchestrator::sanitize_backup_name("LPT1"), "_LPT1");
+        assert_eq!(BackupOrchestrator::sanitize_backup_name("lpt9"), "_lpt9");
+    }
+
+    #[test]
+    fn test_sanitize_windows_reserved_with_extension() {
+        // Windows reserves "CON.txt", "PRN.log", etc.
+        assert_eq!(BackupOrchestrator::sanitize_backup_name("CON.txt"), "_CON.txt");
+        assert_eq!(BackupOrchestrator::sanitize_backup_name("prn.log"), "_prn.log");
+        assert_eq!(BackupOrchestrator::sanitize_backup_name("aux.dat"), "_aux.dat");
+        assert_eq!(BackupOrchestrator::sanitize_backup_name("COM1.backup"), "_COM1.backup");
+    }
+
+    #[test]
+    fn test_sanitize_windows_reserved_partial_match() {
+        // Should not modify if it's part of a name
+        assert_eq!(BackupOrchestrator::sanitize_backup_name("console"), "console");
+        assert_eq!(BackupOrchestrator::sanitize_backup_name("printer"), "printer");
+        assert_eq!(BackupOrchestrator::sanitize_backup_name("mycon"), "mycon");
+        assert_eq!(BackupOrchestrator::sanitize_backup_name("aux_file"), "aux_file");
+    }
+
+    #[test]
+    fn test_sanitize_windows_reserved_case_insensitive() {
+        assert_eq!(BackupOrchestrator::sanitize_backup_name("CoN"), "_CoN");
+        assert_eq!(BackupOrchestrator::sanitize_backup_name("PrN"), "_PrN");
+        assert_eq!(BackupOrchestrator::sanitize_backup_name("AuX"), "_AuX");
+        assert_eq!(BackupOrchestrator::sanitize_backup_name("cOm1"), "_cOm1");
     }
 }

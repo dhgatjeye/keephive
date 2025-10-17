@@ -39,3 +39,4 @@ notify = "8.2.0"
 windows-service = "0.8.0"
 
 tokio-util = { version = "0.7.16", features = ["full"] }
+dunce = "1.0.5"
