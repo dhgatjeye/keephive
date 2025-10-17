@@ -84,7 +84,7 @@ async fn check_disk_space(source: &Path, target: &Path) -> Result<bool> {
     {
         use crate::platform::windows::file_ops::get_disk_free_space;
         let available = get_disk_free_space(target)?;
-        let required = (source_size as f64 * 1.1) as u64;
+        let required = source_size.saturating_mul(11) / 10;
         Ok(available >= required)
     }
 
