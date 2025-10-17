@@ -94,8 +94,11 @@ impl ServiceDaemon {
             }
         });
 
-        // Main service loop
-        let mut running_jobs = std::collections::HashMap::new();
+        // Main service loop - track both handles and cancellation tokens
+        let mut running_jobs: std::collections::HashMap<
+            String,
+            (tokio::task::JoinHandle<Result<()>>, CancellationToken)
+        > = std::collections::HashMap::new();
 
         loop {
             tokio::select! {
@@ -144,13 +147,13 @@ impl ServiceDaemon {
 
     async fn process_jobs(
         &mut self,
-        running_jobs: &mut std::collections::HashMap<String, tokio::task::JoinHandle<Result<()>>>,
+        running_jobs: &mut std::collections::HashMap<String, (tokio::task::JoinHandle<Result<()>>, CancellationToken)>,
     ) -> Result<()> {
         // Track which jobs completed
         let mut completed_jobs = Vec::new();
 
         // Remove completed jobs
-        running_jobs.retain(|id, handle| {
+        running_jobs.retain(|id, (handle, _token)| {
             if handle.is_finished() {
                 debug!("Job completed: {}", id);
                 completed_jobs.push(id.clone());
@@ -182,13 +185,14 @@ impl ServiceDaemon {
 
                 let executor = self.executor.clone();
                 let job_clone = job.clone();
-                let cancellation = self.cancellation.child_token();
+                let job_cancellation = self.cancellation.child_token();
+                let job_cancellation_clone = job_cancellation.clone();
 
                 let handle = tokio::spawn(async move {
-                    executor.execute_job(&job_clone, cancellation).await
+                    executor.execute_job(&job_clone, job_cancellation_clone).await
                 });
 
-                running_jobs.insert(job.id.clone(), handle);
+                running_jobs.insert(job.id.clone(), (handle, job_cancellation));
             }
         }
 
@@ -198,17 +202,22 @@ impl ServiceDaemon {
     async fn handle_config_change(
         &mut self,
         new_config: ServiceConfig,
-        running_jobs: &mut std::collections::HashMap<String, tokio::task::JoinHandle<Result<()>>>,
+        running_jobs: &mut std::collections::HashMap<String, (tokio::task::JoinHandle<Result<()>>, CancellationToken)>,
     ) -> Result<()> {
         let changes = self.scheduler.detect_config_changes(
             &self.config.jobs,
             &new_config.jobs,
         ).await?;
 
-        // Handle removed jobs - always cancel
+        // Handle removed jobs - cancel with token before aborting
         for removed_id in &changes.removed {
-            if let Some(handle) = running_jobs.remove(removed_id) {
+            if let Some((handle, token)) = running_jobs.remove(removed_id) {
                 warn!("Job {} removed from config, cancelling running backup", removed_id);
+
+                // Cancel the token first - this signals execute_backup to stop
+                token.cancel();
+
+                // Then abort the task as fallback
                 handle.abort();
             }
             info!("Job removed: {}", removed_id);
@@ -239,7 +248,8 @@ impl ServiceDaemon {
                             "Job {} source/target changed, cancelling running backup for safety",
                             job_id
                         );
-                        if let Some(handle) = running_jobs.remove(job_id) {
+                        if let Some((handle, token)) = running_jobs.remove(job_id) {
+                            token.cancel();
                             handle.abort();
                         }
 
@@ -268,7 +278,8 @@ impl ServiceDaemon {
                             "Job {} path and schedule changed, cancelling running backup",
                             job_id
                         );
-                        if let Some(handle) = running_jobs.remove(job_id) {
+                        if let Some((handle, token)) = running_jobs.remove(job_id) {
+                            token.cancel();
                             handle.abort();
                         }
 
@@ -315,7 +326,7 @@ impl ServiceDaemon {
     /// Shutdown - wait for running jobs
     async fn shutdown_gracefully(
         &self,
-        running_jobs: &mut std::collections::HashMap<String, tokio::task::JoinHandle<Result<()>>>,
+        running_jobs: &mut std::collections::HashMap<String, (tokio::task::JoinHandle<Result<()>>, CancellationToken)>,
     ) -> Result<()> {
         info!("Waiting for {} running jobs to complete...", running_jobs.len());
 
@@ -324,7 +335,7 @@ impl ServiceDaemon {
         let start = std::time::Instant::now();
 
         while !running_jobs.is_empty() && start.elapsed() < timeout {
-            running_jobs.retain(|id, handle| {
+            running_jobs.retain(|id, (handle, _token)| {
                 if handle.is_finished() {
                     info!("Job finished during shutdown: {}", id);
                     false
@@ -341,8 +352,10 @@ impl ServiceDaemon {
         // Force cancel remaining jobs
         if !running_jobs.is_empty() {
             warn!("Force cancelling {} remaining jobs", running_jobs.len());
-            for (id, handle) in running_jobs.drain() {
-                warn!("Force cancelling job: {}", id);
+            for (id, (handle, token)) in running_jobs.drain() {
+                warn!("Cancelling job: {}", id);
+                
+                token.cancel();
                 handle.abort();
             }
         }
