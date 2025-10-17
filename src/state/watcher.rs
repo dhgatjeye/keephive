@@ -7,6 +7,10 @@ use tracing::{debug, error, info, warn};
 
 use crate::config::ServiceConfig;
 
+// Channel capacity constants for bounded channels
+const CONFIG_CHANGE_CHANNEL_CAPACITY: usize = 10;
+const FS_EVENT_CHANNEL_CAPACITY: usize = 1000;
+
 #[derive(Debug, Clone)]
 pub struct ConfigChangeEvent {
     pub config: ServiceConfig,
@@ -14,7 +18,7 @@ pub struct ConfigChangeEvent {
 
 pub struct ConfigWatcher {
     config_path: PathBuf,
-    tx: mpsc::UnboundedSender<ConfigChangeEvent>,
+    tx: mpsc::Sender<ConfigChangeEvent>,
     cancellation: CancellationToken,
 }
 
@@ -23,8 +27,9 @@ impl ConfigWatcher {
     pub fn new(
         config_path: PathBuf,
         cancellation: CancellationToken,
-    ) -> Result<(Self, mpsc::UnboundedReceiver<ConfigChangeEvent>)> {
-        let (tx, rx) = mpsc::unbounded_channel();
+    ) -> Result<(Self, mpsc::Receiver<ConfigChangeEvent>)> {
+        // Use bounded channel to prevent unbounded memory growth
+        let (tx, rx) = mpsc::channel(CONFIG_CHANGE_CHANNEL_CAPACITY);
 
         Ok((
             Self {
@@ -40,7 +45,7 @@ impl ConfigWatcher {
     pub async fn watch(self) -> Result<()> {
         info!("Starting config file watcher for: {}", self.config_path.display());
 
-        let (notify_tx, mut notify_rx) = mpsc::unbounded_channel();
+        let (notify_tx, mut notify_rx) = mpsc::channel(FS_EVENT_CHANNEL_CAPACITY);
 
         let config_path = self.config_path.clone();
         let config_path_for_watcher = self.config_path.clone();
@@ -51,7 +56,7 @@ impl ConfigWatcher {
             match res {
                 Ok(event) => {
                     debug!("File system event: {:?}", event);
-                    let _ = notify_tx.send(event);
+                    let _ = notify_tx.try_send(event);
                 }
                 Err(e) => error!("Watch error: {:?}", e),
             }
@@ -80,9 +85,9 @@ impl ConfigWatcher {
                     match Self::load_config(&config_path).await {
                         Ok(config) => {
                             info!("Config loaded successfully, notifying daemon");
-                            if tx.send(ConfigChangeEvent { config }).is_err() {
-                                warn!("Config change receiver dropped");
-                                break;
+                            // If daemon is not consuming, we drop old events (latest wins)
+                            if tx.try_send(ConfigChangeEvent { config }).is_err() {
+                                warn!("Config change channel full or receiver dropped, skipping update");
                             }
                         }
                         Err(e) => {
