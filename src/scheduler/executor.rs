@@ -11,6 +11,7 @@ use crate::state::{JobStatus, StateManager};
 pub struct JobExecutor {
     pub(crate) orchestrator: BackupOrchestrator,
     pub(crate) state_manager: Arc<StateManager>,
+    pub(crate) retention_count: usize,
 }
 
 impl JobExecutor {
@@ -18,7 +19,22 @@ impl JobExecutor {
         Self {
             orchestrator: BackupOrchestrator::new(),
             state_manager,
+            retention_count: 10, // Default, should be updated via set_retention_count
         }
+    }
+
+    /// Create executor with specific retention count from config
+    pub fn with_retention_count(state_manager: Arc<StateManager>, retention_count: usize) -> Self {
+        Self {
+            orchestrator: BackupOrchestrator::new(),
+            state_manager,
+            retention_count,
+        }
+    }
+
+    /// Update retention count (called when config changes)
+    pub fn set_retention_count(&mut self, retention_count: usize) {
+        self.retention_count = retention_count;
     }
 
     pub async fn execute_job(
@@ -55,10 +71,17 @@ impl JobExecutor {
                     js.active_backup = None;
                 }).await?;
 
-                // Cleanup old backups
-                let retention_count = 10; // From config
-                if let Err(e) = BackupOrchestrator::cleanup_old_backups(&job.target, retention_count).await {
-                    warn!("Failed to cleanup old backups: {}", e);
+                // Cleanup old backups using actual retention count from config
+                info!(
+                    "Cleaning up old backups for job {} (retention: {} backups)",
+                    job.id, self.retention_count
+                );
+
+                if let Err(e) = BackupOrchestrator::cleanup_old_backups(
+                    &job.target,
+                    self.retention_count
+                ).await {
+                    warn!("Failed to cleanup old backups for job {}: {}", job.id, e);
                 }
 
                 info!("Job completed successfully: {}", job.id);

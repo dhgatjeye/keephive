@@ -29,7 +29,10 @@ impl ServiceDaemon {
         );
 
         let scheduler = Scheduler::new(state_manager.clone());
-        let executor = JobExecutor::new(state_manager.clone());
+        let executor = JobExecutor::with_retention_count(
+            state_manager.clone(),
+            config.retention_count,
+        );
         let recovery = RecoveryManager::new(state_manager.clone());
         let cancellation = CancellationToken::new();
 
@@ -51,7 +54,10 @@ impl ServiceDaemon {
         );
 
         let scheduler = Scheduler::new(state_manager.clone());
-        let executor = JobExecutor::new(state_manager.clone());
+        let executor = JobExecutor::with_retention_count(
+            state_manager.clone(),
+            config.retention_count,
+        );
         let recovery = RecoveryManager::new(state_manager.clone());
 
         Ok(Self {
@@ -354,7 +360,7 @@ impl ServiceDaemon {
             warn!("Force cancelling {} remaining jobs", running_jobs.len());
             for (id, (handle, token)) in running_jobs.drain() {
                 warn!("Cancelling job: {}", id);
-                
+
                 token.cancel();
                 handle.abort();
             }
@@ -377,6 +383,7 @@ impl Clone for JobExecutor {
         Self {
             orchestrator: BackupOrchestrator::new(),
             state_manager: self.state_manager.clone(),
+            retention_count: self.retention_count,
         }
     }
 }
