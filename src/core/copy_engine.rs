@@ -30,7 +30,7 @@ impl CopyEngine {
         mut progress_callback: F,
     ) -> Result<CopyProgress>
     where
-        F: FnMut(CopyProgress) + Send,
+        F: FnMut(&CopyProgress) + Send,
     {
         let mut progress = CopyProgress {
             bytes_copied: 0,
@@ -54,7 +54,7 @@ impl CopyEngine {
         progress_callback: &'a mut F,
     ) -> std::pin::Pin<Box<dyn Future<Output=Result<()>> + Send + 'a>>
     where
-        F: FnMut(CopyProgress) + Send,
+        F: FnMut(&CopyProgress) + Send,
     {
         Box::pin(async move {
             let mut entries = tokio::fs::read_dir(current_source).await
@@ -98,7 +98,7 @@ impl CopyEngine {
                         Ok(bytes) => {
                             progress.bytes_copied += bytes;
                             progress.files_copied += 1;
-                            progress_callback(progress.clone());
+                            progress_callback(&*progress);
                         }
                         Err(e) => {
                             warn!("Failed to copy file {}: {}", source_path.display(), e);
