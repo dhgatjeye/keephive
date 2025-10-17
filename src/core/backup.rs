@@ -125,8 +125,59 @@ impl BackupOrchestrator {
             .and_then(|n| n.to_str())
             .unwrap_or("backup");
 
+        // Sanitize source name to prevent path invalid characters
+        let sanitized_name = Self::sanitize_backup_name(source_name);
+
         let timestamp = Utc::now().format("%Y-%m-%d_%H%M%S");
-        format!("{}_{}", source_name, timestamp)
+
+        // Add milliseconds to prevent collisions if two backups start in same second
+        let millis = Utc::now().timestamp_subsec_millis();
+
+        format!("{}_{}_{:03}", sanitized_name, timestamp, millis)
+    }
+
+    /// Sanitize backup name to prevent path invalid filesystem characters
+    fn sanitize_backup_name(name: &str) -> String {
+        const INVALID_CHARS: &[char] = &['/', '\\', ':', '*', '?', '"', '<', '>', '|', '\0'];
+
+        let mut sanitized = String::with_capacity(name.len());
+
+        for ch in name.chars() {
+            if INVALID_CHARS.contains(&ch) || ch.is_control() {
+                // Replace invalid characters with underscore
+                sanitized.push('_');
+            } else {
+                sanitized.push(ch);
+            }
+        }
+
+        // Additional security checks
+        let sanitized = sanitized.trim();
+
+        // Prevent ".."
+        if sanitized == ".." || sanitized == "." {
+            return "backup".to_string();
+        }
+
+        // Prevent names that start/end with dots (Windows reserved)
+        let sanitized = sanitized.trim_matches('.');
+
+        // Prevent empty names after sanitization
+        if sanitized.is_empty() {
+            return "backup".to_string();
+        }
+
+        // Prevent names that are only underscores (from replaced invalid chars)
+        if sanitized.chars().all(|c| c == '_') {
+            return "backup".to_string();
+        }
+
+        // Limit length to prevent filesystem issues (Windows has 255 char limit)
+        if sanitized.len() > 100 {
+            sanitized.chars().take(100).collect()
+        } else {
+            sanitized.to_string()
+        }
     }
 
     /// Detect and handle partial backups on startup
@@ -194,5 +245,174 @@ impl BackupOrchestrator {
 impl Default for BackupOrchestrator {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sanitize_backup_name_prevents_path_traversal() {
+        // Test ".." attack
+        let sanitized = BackupOrchestrator::sanitize_backup_name("..");
+        assert_eq!(sanitized, "backup", "Should prevent .. traversal");
+
+        // Test "."
+        let sanitized = BackupOrchestrator::sanitize_backup_name(".");
+        assert_eq!(sanitized, "backup", "Should prevent . as name");
+    }
+
+    #[test]
+    fn test_sanitize_backup_name_removes_path_separators() {
+        // Test forward slash
+        let sanitized = BackupOrchestrator::sanitize_backup_name("path/to/file");
+        assert!(!sanitized.contains('/'), "Should remove forward slashes");
+        assert_eq!(sanitized, "path_to_file");
+
+        // Test backslash
+        let sanitized = BackupOrchestrator::sanitize_backup_name("path\\to\\file");
+        assert!(!sanitized.contains('\\'), "Should remove backslashes");
+        assert_eq!(sanitized, "path_to_file");
+    }
+
+    #[test]
+    fn test_sanitize_backup_name_removes_invalid_chars() {
+        let invalid_names = vec![
+            ("file:name", "file_name"),
+            ("file*name", "file_name"),
+            ("file?name", "file_name"),
+            ("file\"name", "file_name"),
+            ("file<name", "file_name"),
+            ("file>name", "file_name"),
+            ("file|name", "file_name"),
+        ];
+
+        for (input, expected) in invalid_names {
+            let sanitized = BackupOrchestrator::sanitize_backup_name(input);
+            assert_eq!(sanitized, expected, "Failed for input: {}", input);
+        }
+    }
+
+    #[test]
+    fn test_sanitize_backup_name_handles_empty_after_cleaning() {
+        // Only invalid characters
+        let sanitized = BackupOrchestrator::sanitize_backup_name("////");
+        assert_eq!(sanitized, "backup", "Should return 'backup' for empty result");
+
+        // Only dots
+        let sanitized = BackupOrchestrator::sanitize_backup_name("...");
+        assert_eq!(sanitized, "backup", "Should return 'backup' for only dots");
+    }
+
+    #[test]
+    fn test_sanitize_backup_name_trims_dots() {
+        // Leading dots
+        let sanitized = BackupOrchestrator::sanitize_backup_name("...filename");
+        assert_eq!(sanitized, "filename", "Should trim leading dots");
+
+        // Trailing dots
+        let sanitized = BackupOrchestrator::sanitize_backup_name("filename...");
+        assert_eq!(sanitized, "filename", "Should trim trailing dots");
+
+        // Both
+        let sanitized = BackupOrchestrator::sanitize_backup_name("...filename...");
+        assert_eq!(sanitized, "filename", "Should trim both sides");
+    }
+
+    #[test]
+    fn test_sanitize_backup_name_limits_length() {
+        let long_name = "a".repeat(200);
+        let sanitized = BackupOrchestrator::sanitize_backup_name(&long_name);
+        assert!(sanitized.len() <= 100, "Should limit length to 100 chars");
+        assert_eq!(sanitized.len(), 100);
+    }
+
+    #[test]
+    fn test_sanitize_backup_name_removes_control_chars() {
+        let name_with_control = "file\x00name\x01test";
+        let sanitized = BackupOrchestrator::sanitize_backup_name(name_with_control);
+        assert_eq!(sanitized, "file_name_test", "Should remove control characters");
+    }
+
+    #[test]
+    fn test_sanitize_backup_name_preserves_valid_names() {
+        let valid_names = vec![
+            "Documents",
+            "My_Folder",
+            "backup-2024",
+            "folder.name",
+            "test123",
+        ];
+
+        for name in valid_names {
+            let sanitized = BackupOrchestrator::sanitize_backup_name(name);
+            assert_eq!(sanitized, name, "Should preserve valid name: {}", name);
+        }
+    }
+
+    #[test]
+    fn test_generate_backup_name_is_unique() {
+        let source = Path::new("C:\\Users\\test");
+
+        let name1 = BackupOrchestrator::generate_backup_name(source);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let name2 = BackupOrchestrator::generate_backup_name(source);
+
+        // Should be different due to milliseconds
+        assert_ne!(name1, name2, "Backup names should be unique");
+    }
+
+    #[test]
+    fn test_generate_backup_name_security() {
+        // Test path traversal attempt
+        let malicious_source = Path::new("C:\\Users\\..\\..");
+        let backup_name = BackupOrchestrator::generate_backup_name(malicious_source);
+
+        // Should be sanitized to "backup"
+        assert!(backup_name.starts_with("backup_"),
+            "Should sanitize .. to 'backup': {}", backup_name);
+        assert!(!backup_name.contains(".."),
+            "Should not contain .. : {}", backup_name);
+    }
+
+    #[test]
+    fn test_generate_backup_name_with_special_chars() {
+        let source = Path::new("C:\\Users\\test\\my:folder*name");
+        let backup_name = BackupOrchestrator::generate_backup_name(source);
+
+        // Should replace : and *
+        assert!(!backup_name.contains(':'), "Should not contain :");
+        assert!(!backup_name.contains('*'), "Should not contain *");
+        assert!(backup_name.contains('_'), "Should replace with _");
+    }
+
+    #[test]
+    fn test_backup_name_format() {
+        let source = Path::new("C:\\Users\\Documents");
+        let backup_name = BackupOrchestrator::generate_backup_name(source);
+
+        // Should follow format: name_YYYY-MM-DD_HHMMSS_mmm
+        let parts: Vec<&str> = backup_name.split('_').collect();
+        assert!(parts.len() >= 4, "Should have at least 4 parts: {}", backup_name);
+
+        // Check timestamp format
+        assert!(parts[1].contains('-'), "Should have date with dashes");
+
+        // Check milliseconds (3 digits)
+        let millis_part = parts.last().unwrap();
+        assert_eq!(millis_part.len(), 3, "Milliseconds should be 3 digits");
+        assert!(millis_part.chars().all(|c| c.is_numeric()),
+            "Milliseconds should be numeric");
+    }
+
+    #[test]
+    fn test_generate_backup_name_with_unicode() {
+        let source = Path::new("C:\\Users\\Documents\\文档");
+        let backup_name = BackupOrchestrator::generate_backup_name(source);
+
+        // Should preserve valid unicode
+        assert!(backup_name.starts_with("文档_"),
+            "Should preserve unicode: {}", backup_name);
     }
 }
