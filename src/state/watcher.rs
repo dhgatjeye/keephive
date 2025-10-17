@@ -50,68 +50,53 @@ impl ConfigWatcher {
         let config_path = self.config_path.clone();
         let config_path_for_watcher = self.config_path.clone();
         let tx = self.tx.clone();
+        let cancellation = self.cancellation.clone();  // Clone for select
 
-        // Create file watcher with proper error handling
+        // Create the Watcher (sync, but with closure)
         let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
             match res {
                 Ok(event) => {
                     debug!("File system event: {:?}", event);
-                    let _ = notify_tx.try_send(event);
+                    let _ = notify_tx.try_send(event);  // Sync try_send
                 }
                 Err(e) => error!("Watch error: {:?}", e),
             }
         })?;
 
-        // Watch the parent directory
-        let watch_path = if let Some(parent) = config_path_for_watcher.parent() {
-            parent
-        } else {
-            Path::new(".")
-        };
-
+        let watch_path = if let Some(parent) = config_path_for_watcher.parent() { parent } else { Path::new(".") };
         info!("Watching directory: {}", watch_path.display());
-        watcher.watch(watch_path, RecursiveMode::NonRecursive)
-            .context("Failed to start watching config directory")?;
+        watcher.watch(watch_path, RecursiveMode::NonRecursive).context("Failed to start watching")?;
 
-        // Process file system events in a separate task
-        tokio::spawn(async move {
-            while let Some(event) = notify_rx.recv().await {
+        // Make the event loop asynchronous, integrate cancellation with select
+        // Keep Watcher here (keep it alive until it drops)
+        loop {
+            tokio::select! {
+            // Event receive
+            Some(event) = notify_rx.recv() => {
                 if Self::is_config_modified(&event, &config_path) {
                     info!("Config file change detected, reloading...");
-
-                    // Add a slight delay to be somewhat sure the file has been written
-                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
                     match Self::load_config(&config_path).await {
                         Ok(config) => {
                             info!("Config loaded successfully, notifying daemon");
-                            // If daemon is not consuming, we drop old events (latest wins)
                             if tx.try_send(ConfigChangeEvent { config }).is_err() {
                                 warn!("Config change channel full or receiver dropped, skipping update");
                             }
                         }
-                        Err(e) => {
-                            warn!("Failed to reload config: {}", e);
-                        }
+                        Err(e) => warn!("Failed to reload config: {}", e),
                     }
                 }
             }
-            debug!("Config watcher event loop terminated");
-        });
 
-        // Keep watcher alive with cancellation support
-        let cancellation = self.cancellation.clone();
-        tokio::task::spawn_blocking(move || {
-            let _watcher = watcher;
-
-            // Wait for cancellation signal
-            while !cancellation.is_cancelled() {
-                std::thread::sleep(std::time::Duration::from_millis(100));
+            // Wait for cancellation
+            _ = cancellation.cancelled() => {
+                info!("Config watcher shutdown complete");
+                break;  // Exit the loop, watcher drop occurs
             }
+        }
+        }
 
-            info!("Config watcher shutdown complete");
-        });
-
+        debug!("Config watcher event loop terminated");
         Ok(())
     }
 
