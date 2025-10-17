@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::config::ServiceConfig;
@@ -14,12 +15,14 @@ pub struct ConfigChangeEvent {
 pub struct ConfigWatcher {
     config_path: PathBuf,
     tx: mpsc::UnboundedSender<ConfigChangeEvent>,
+    cancellation: CancellationToken,
 }
 
 impl ConfigWatcher {
     /// Create new config watcher
     pub fn new(
         config_path: PathBuf,
+        cancellation: CancellationToken,
     ) -> Result<(Self, mpsc::UnboundedReceiver<ConfigChangeEvent>)> {
         let (tx, rx) = mpsc::unbounded_channel();
 
@@ -27,6 +30,7 @@ impl ConfigWatcher {
             Self {
                 config_path,
                 tx,
+                cancellation,
             },
             rx,
         ))
@@ -90,12 +94,17 @@ impl ConfigWatcher {
             debug!("Config watcher event loop terminated");
         });
 
-        // Keep watcher alive - move it into blocking thread
+        // Keep watcher alive with cancellation support
+        let cancellation = self.cancellation.clone();
         tokio::task::spawn_blocking(move || {
             let _watcher = watcher;
-            loop {
-                std::thread::sleep(std::time::Duration::from_secs(1));
+
+            // Wait for cancellation signal
+            while !cancellation.is_cancelled() {
+                std::thread::sleep(std::time::Duration::from_millis(100));
             }
+
+            info!("Config watcher shutdown complete");
         });
 
         Ok(())

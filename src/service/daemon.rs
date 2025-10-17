@@ -86,8 +86,8 @@ impl ServiceDaemon {
         // Calculate initial next runs
         self.scheduler.calculate_next_runs(&self.config.jobs).await?;
 
-        // Setup config watcher
-        let (watcher, mut config_rx) = ConfigWatcher::new(config_path)?;
+        // Setup config watcher with cancellation support
+        let (watcher, mut config_rx) = ConfigWatcher::new(config_path, self.cancellation.clone())?;
         tokio::spawn(async move {
             if let Err(e) = watcher.watch().await {
                 error!("Config watcher error: {}", e);
