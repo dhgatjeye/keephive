@@ -22,6 +22,10 @@ pub async fn validate_backup_job(source: &Path, target: &Path) -> Result<Validat
         bail!("Source path is not a directory: {}", source.display());
     }
 
+    if source == target {
+        bail!("Source and target directories cannot be the same");
+    }
+
     // 2. Test read access on source
     match tokio::fs::read_dir(source).await {
         Ok(_) => debug!("Source is readable"),
