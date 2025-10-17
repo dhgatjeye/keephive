@@ -149,20 +149,34 @@ impl Schedule {
         use chrono::{Datelike, Timelike};
 
         let now = chrono::Utc::now();
-        let current_weekday = now.weekday().num_days_from_monday() + 1;
+        let current_weekday = now.weekday().num_days_from_monday() + 1; // 1=Monday, 7=Sunday
 
+        // Calculate days until target weekday
         let days_until = if current_weekday < day {
+            // Target day is later this week
             day - current_weekday
-        } else if current_weekday == day && now.hour() < hour || (now.hour() == hour && now.minute() < minute) {
-            0
+        } else if current_weekday == day {
+            // Today is the target day - check if time has passed
+            let target_time_passed = now.hour() > hour
+                || (now.hour() == hour && now.minute() >= minute);
+
+            if target_time_passed {
+                // Time has passed today, schedule for next week
+                7
+            } else {
+                // Time hasn't passed yet today
+                0
+            }
         } else {
+            // Target day was earlier this week, schedule for next week
+            // current_weekday > day
             7 - (current_weekday - day)
         };
 
         let next_date = now.date_naive() + Duration::days(days_until as i64);
         let next_datetime = next_date
             .and_hms_opt(hour, minute, 0)
-            .unwrap();
+            .expect("Invalid hour/minute for weekly schedule");
 
         let next = chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(next_datetime, chrono::Utc);
         next.signed_duration_since(now)
