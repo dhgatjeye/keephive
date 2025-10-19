@@ -6,12 +6,6 @@ use tracing::info;
 
 pub struct WindowsService;
 
-impl Default for WindowsService {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl WindowsService {
     pub fn new() -> Self {
         Self

@@ -17,12 +17,6 @@ impl WindowsFileSystem {
     }
 }
 
-impl Default for WindowsFileSystem {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl FileSystem for WindowsFileSystem {
     async fn copy_file(&self, src: &Path, dst: &Path) -> Result<u64> {
         let src = self.normalizer.normalize(src);
