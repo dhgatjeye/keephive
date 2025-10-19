@@ -2,6 +2,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Current state schema version for migrations
+pub const STATE_SCHEMA_VERSION: u32 = 1;
+
 /// Root state structure persisted to disk
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackupState {
@@ -15,16 +18,11 @@ pub struct BackupState {
     pub last_updated: DateTime<Utc>,
 }
 
-impl Default for BackupState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl BackupState {
+    /// Create a new empty backup state with current timestamp
     pub fn new() -> Self {
         Self {
-            version: 1,
+            version: STATE_SCHEMA_VERSION,
             jobs: Vec::new(),
             last_updated: Utc::now(),
         }
@@ -145,6 +143,7 @@ pub struct BackupMetadata {
 }
 
 impl BackupMetadata {
+    /// Create new backup metadata with current timestamp
     pub fn new(backup_name: String, backup_path: PathBuf) -> Self {
         Self {
             backup_name,

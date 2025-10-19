@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
-use crate::config::BackupJob;
+use crate::config::{BackupJob, DEFAULT_RETENTION_COUNT};
 use crate::core::BackupOrchestrator;
 use crate::state::{JobStatus, StateManager};
 
@@ -30,7 +30,7 @@ impl JobExecutor {
         Self {
             orchestrator: BackupOrchestrator::new(),
             state_manager,
-            retention_count: 10, // Default, should be updated via set_retention_count
+            retention_count: DEFAULT_RETENTION_COUNT,
         }
     }
 

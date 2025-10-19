@@ -2,6 +2,26 @@ use chrono::Duration;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Default number of backups to retain per job
+pub const DEFAULT_RETENTION_COUNT: usize = 10;
+const DEFAULT_LOG_LEVEL: &str = "info";
+const DEFAULT_STATE_FILE: &str = ".keephive_state.json";
+
+#[inline]
+fn default_retention_count() -> usize {
+    DEFAULT_RETENTION_COUNT
+}
+
+#[inline]
+fn default_log_level() -> String {
+    DEFAULT_LOG_LEVEL.to_string()
+}
+
+#[inline]
+fn default_state_path() -> PathBuf {
+    PathBuf::from(DEFAULT_STATE_FILE)
+}
+
 /// Main service configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceConfig {
@@ -29,9 +49,6 @@ pub struct ServiceConfig {
     pub log_rotation: LogRotation,
 }
 
-fn default_retention_count() -> usize { 10 }
-fn default_log_level() -> String { "info".to_string() }
-fn default_state_path() -> PathBuf { PathBuf::from(".keephive_state.json") }
 
 /// Log file rotation strategy
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -185,12 +202,3 @@ impl Schedule {
 
 /// Backup configuration (alias for compatibility)
 pub type BackupConfig = ServiceConfig;
-
-/// Reserved filenames on Windows systems
-pub const WINDOWS_RESERVED: &[&str; 24] = &[
-    "aux", "con", "nul", "prn",
-    "com0", "com1", "com2", "com3", "com4",
-    "com5", "com6", "com7", "com8", "com9",
-    "lpt0", "lpt1", "lpt2", "lpt3", "lpt4",
-    "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
-];

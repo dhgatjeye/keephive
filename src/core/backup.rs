@@ -1,4 +1,3 @@
-use crate::config::models::WINDOWS_RESERVED;
 use crate::core::{validate_backup_job, CopyEngine};
 use crate::state::BackupMetadata;
 use anyhow::{bail, Context, Result};
@@ -6,6 +5,9 @@ use chrono::Utc;
 use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
+
+#[cfg(windows)]
+use crate::platform::windows::is_reserved_name;
 
 pub struct BackupOrchestrator {
     copy_engine: CopyEngine,
@@ -164,17 +166,13 @@ impl BackupOrchestrator {
             return "backup".to_string();
         }
 
-        let base_name = sanitized
-            .split('.')
-            .next()
-            .unwrap_or(&sanitized)
-            .to_lowercase();
-
-        if WINDOWS_RESERVED.contains(&base_name.as_str()) {
-            format!("_{}", sanitized)
-        } else {
-            sanitized
+        // Check for Windows reserved names
+        #[cfg(windows)]
+        if is_reserved_name(&sanitized) {
+            return format!("_{}", sanitized);
         }
+
+        sanitized
     }
 
     /// Detect and handle partial backups on startup
