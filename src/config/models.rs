@@ -1,9 +1,10 @@
 use chrono::Duration;
+use chrono::{Datelike, Local, Timelike};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Default number of backups to retain per job
-pub const DEFAULT_RETENTION_COUNT: usize = 10;
+pub const DEFAULT_RETENTION_COUNT: usize = 5;
 const DEFAULT_LOG_LEVEL: &str = "info";
 const DEFAULT_STATE_FILE: &str = ".keephive_state.json";
 
@@ -123,7 +124,7 @@ impl Schedule {
         match self {
             Schedule::Interval { seconds } => {
                 if let Some(last) = last_run {
-                    let elapsed = chrono::Utc::now().signed_duration_since(last);
+                    let elapsed = Local::now().signed_duration_since(last);
                     let interval = Duration::seconds(*seconds as i64);
                     if elapsed >= interval {
                         Duration::zero()
@@ -144,7 +145,7 @@ impl Schedule {
     }
 
     fn calculate_next_daily(hour: u32, minute: u32, _last_run: Option<chrono::DateTime<chrono::Utc>>) -> Duration {
-        let now = chrono::Utc::now();
+        let now = Local::now();
         let today_scheduled = now
             .date_naive()
             .and_hms_opt(hour, minute, 0)
@@ -158,14 +159,12 @@ impl Schedule {
                 .unwrap()
         };
 
-        let next_datetime = chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(next, chrono::Utc);
+        let next_datetime = next.and_local_timezone(now.timezone()).unwrap();
         next_datetime.signed_duration_since(now)
     }
 
     fn calculate_next_weekly(day: u32, hour: u32, minute: u32, _last_run: Option<chrono::DateTime<chrono::Utc>>) -> Duration {
-        use chrono::{Datelike, Timelike};
-
-        let now = chrono::Utc::now();
+        let now = Local::now();
         let current_weekday = now.weekday().num_days_from_monday() + 1; // 1=Monday, 7=Sunday
 
         // Calculate days until target weekday
@@ -195,7 +194,7 @@ impl Schedule {
             .and_hms_opt(hour, minute, 0)
             .expect("Invalid hour/minute for weekly schedule");
 
-        let next = chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(next_datetime, chrono::Utc);
+        let next = next_datetime.and_local_timezone(now.timezone()).unwrap();
         next.signed_duration_since(now)
     }
 }
